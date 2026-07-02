@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from html.parser import HTMLParser
 
 import requests
 
@@ -196,13 +197,112 @@ class AlgoClient:
             raise AlgoError(f"{self.host}: {page}.lua action={action} HTTP {r.status_code}")
         return r.text
 
+    # ── LuCI full-form read-modify-write (the reliable config path) ──
+    #
+    # Algo settings pages under /control/*.lua are LuCI CBI forms. A save posts
+    # the WHOLE form back; to change one field you must resubmit every other
+    # field at its current value (plus the page's csrf.token). This is more
+    # reliable than the RESTful API on older firmware (5.x), where many /api/*
+    # routes are absent. Verified live on an 8186 (fw 5.3.4).
+
+    def form_fields(self, page: str) -> dict[str, str]:
+        """Read a settings page's form into a ``name -> value`` dict.
+
+        Radios/checkboxes contribute only the *checked* option; selects the
+        *selected* option (first option if none marked). Includes hidden fields
+        such as ``csrf.token``.
+        """
+        if not self._logged_in:
+            self.login()
+        html_text = self._get(f"/{page.lstrip('/')}").text
+
+        class _FP(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.f: dict[str, str] = {}
+                self._sel = None
+                self._first = None
+                self._selv = None
+
+            def handle_starttag(self, tag, attrs):
+                a = {k: (v or "") for k, v in attrs}
+                if tag == "input" and a.get("name"):
+                    ty = a.get("type", "text").lower()
+                    if ty in ("radio", "checkbox"):
+                        if "checked" in a:
+                            self.f[a["name"]] = a.get("value", "")
+                    elif ty != "submit":
+                        self.f[a["name"]] = a.get("value", "")
+                elif tag == "select":
+                    self._sel = a.get("name")
+                    self._first = None
+                    self._selv = None
+                elif tag == "option" and self._sel:
+                    if self._first is None:
+                        self._first = a.get("value", "")
+                    if "selected" in a:
+                        self._selv = a.get("value", "")
+
+            def handle_endtag(self, tag):
+                if tag == "select" and self._sel:
+                    self.f[self._sel] = (self._selv if self._selv is not None
+                                         else (self._first or ""))
+                    self._sel = None
+
+        p = _FP()
+        p.feed(html_text)
+        return p.f
+
+    def save_form(self, page: str, overrides: dict[str, str]) -> dict[str, str]:
+        """Read a settings page, apply ``overrides``, resubmit the full form.
+
+        Returns the re-read fields so callers can verify. Raises on non-200.
+        """
+        fields = self.form_fields(page)
+        body = {k: ("" if v is None else str(v)) for k, v in fields.items()}
+        body.update({k: str(v) for k, v in overrides.items()})
+        body["save"] = "Save"
+        r = self._post(f"/{page.lstrip('/')}", data=body)
+        if r.status_code != 200:
+            raise AlgoError(f"{self.host}: save {page} HTTP {r.status_code}")
+        return self.form_fields(page)
+
+    def enable_rest_api(self, api_password: str = "algo") -> bool:
+        """Enable the official RESTful API (Advanced Settings → Admin).
+
+        Flips ``admin.web.api`` on and sets the API password, so
+        :class:`~pyalgo.rest.AlgoRestClient` can take over. Returns True if the
+        toggle reads back enabled. NOTE: on some firmware the REST routes only
+        register after an app reload/reboot.
+        """
+        after = self.save_form("/control/admin.lua",
+                               {"admin.web.api": "1", "api.admin.pwd": api_password})
+        return after.get("admin.web.api") == "1"
+
+    def set_sip_servers(self, primary: str, backup1: str | None = None,
+                        backup2: str | None = None, redundancy: bool = True,
+                        expiry: int | None = None) -> dict[str, str]:
+        """Point SIP registration at ``primary`` (+ optional backup servers).
+
+        Writes ``sip.proxy`` on the Basic SIP page and the backup proxies /
+        redundancy toggle on the Advanced SIP page. This is the fleet-repoint
+        operation (e.g. primary = WG tunnel, backup1 = SBC). Verified live.
+        """
+        self.save_form("/control/shsip.lua", {"sip.proxy": primary})
+        adv: dict[str, str] = {"sip.ssr.use": "1" if redundancy else "0"}
+        if backup1 is not None:
+            adv["sip.bkproxy1"] = backup1
+        if backup2 is not None:
+            adv["sip.bkproxy2"] = backup2
+        if expiry is not None:
+            adv["sip.regexp"] = str(expiry)
+        return self.save_form("/control/shadvsip.lua", adv)
+
     def export_config(self) -> str:
         """Download the full UCI config export.
 
-        NOTE (v0.1): ``/control/download.lua`` requires a session ``id`` token
-        (Lua raises ``attempt to concatenate local 'id'`` without it). Prefer
-        :meth:`control_action` for per-field writes until the export token is
-        mapped. This method is a placeholder so the call site is stable.
+        NOTE: ``/control/download.lua`` needs a session ``id`` token still being
+        mapped. Prefer :meth:`set_sip_servers` / :meth:`save_form` for writes.
         """
         raise NotImplementedError(
             "config export pending: /control/download.lua needs the session id token"

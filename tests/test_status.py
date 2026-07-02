@@ -65,3 +65,29 @@ def test_empty_registration_is_safe():
     st = parse_status('[["Call Status","Idle"]]')
     assert st.registrations == []
     assert st.primary_registration is None
+
+
+def test_form_parser_via_client():
+    """AlgoClient.form_fields parses inputs, checked radios, selected options."""
+    from pyalgo import AlgoClient
+    html = (
+        '<form action="/control/admin.lua" method="post">'
+        '<input name="admin.devname" value="siphorn">'
+        '<input type="radio" name="admin.web.api" value="1">'
+        '<input type="radio" name="admin.web.api" value="0" checked>'
+        '<input type="password" name="api.admin.pwd" value="algo">'
+        '<select name="admin.web.timeout"><option value="60">60</option>'
+        '<option value="3600" selected>3600</option></select>'
+        '<input type="hidden" name="csrf.token" value="abc123">'
+        '<input type="submit" name="save" value="Save"></form>'
+    )
+    c = AlgoClient("192.0.2.5", "pw")
+    c._logged_in = True
+    c._get = lambda path, **kw: type("R", (), {"text": html})()
+    f = c.form_fields("/control/admin.lua")
+    assert f["admin.devname"] == "siphorn"
+    assert f["admin.web.api"] == "0"        # only the checked radio
+    assert f["api.admin.pwd"] == "algo"
+    assert f["admin.web.timeout"] == "3600"  # selected option
+    assert f["csrf.token"] == "abc123"
+    assert "save" not in f                    # submit excluded
