@@ -29,6 +29,14 @@ import requests
 from .status import AlgoStatus, parse_status
 
 _NONCE_RE = re.compile(r'name="nonce"\s+value="([0-9a-fA-F]+)"')
+# The login POST response echoes an "Invalid Password" notice + re-renders the pwd
+# field when auth fails; a success serves privileged content without either.
+_LOGIN_REJECT_RE = re.compile(r"Invalid Password|use the correct password", re.IGNORECASE)
+
+
+def _login_rejected(html: str) -> bool:
+    """True if a login POST response is the rejected-login page (bad password)."""
+    return bool(_LOGIN_REJECT_RE.search(html or ""))
 
 
 class AlgoError(RuntimeError):
@@ -132,12 +140,13 @@ class AlgoClient:
             data={"pwd": self._password, "nonce": nonce},
             allow_redirects=True,
         )
-        # A rejected password re-renders the login form with an "Invalid" notice
-        # and no privileged content. Confirm auth positively via the status feed.
         if r.status_code != 200:
             raise AlgoAuthError(f"{self.host}: login HTTP {r.status_code}")
-        probe = self._get("/ajax-status.json")
-        if probe.status_code != 200 or not probe.text.strip().startswith("["):
+        # A rejected password re-renders the login form with an "Invalid Password"
+        # notice + the pwd field. NOTE: /ajax-status.json is NOT a reliable auth probe
+        # — some firmware serves it (a valid JSON array) even when unauthenticated, so
+        # a bad password would silently look "logged in". Detect the login page instead.
+        if _login_rejected(r.text):
             raise AlgoAuthError(f"{self.host}: login rejected (bad password?)")
         self._logged_in = True
 
