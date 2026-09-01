@@ -1,0 +1,11 @@
+[
+  ["Device Name", "siphorn-000001"],
+  ["SIP Registration", "Page, Successful, 100;"],
+  ["Call Status", "Idle"],
+  ["Proxy Status", "Single proxy mode"],
+  ["Provisioning Status", "None Found"],
+  ["MAC", "00:22:ee:00:00:01"],
+  ["System Integrity", "Updating..."],
+  ["IPv4", "192.0.2.5/24, Gateway: 192.0.2.1"],
+  ["IPv6", "Not Available"]
+]

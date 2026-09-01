@@ -1,0 +1,8 @@
+{
+  "sip.server.primary": "sip-primary.example.invalid",
+  "sip.server.secondary": "sip-secondary.example.invalid",
+  "sip.extension": "100",
+  "sip.auth.id": "100",
+  "sip.proxy.address": "sip-primary.example.invalid",
+  "sip.proxy.port": "5060"
+}
